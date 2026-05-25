@@ -6,6 +6,9 @@ on:
     - cron: '0 16,18,0,3,9,11,12,14 * * *'
   workflow_dispatch: # 手动触发
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   update:
     runs-on: ubuntu-latest
