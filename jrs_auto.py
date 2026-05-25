@@ -26,91 +26,6 @@ HEADERS = {'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chr
 CCTV_KEEP = ['CCTV-1 ', 'CCTV-5 ', 'CCTV-5+',
              'CCTV1 ', 'CCTV5 ']
 
-# 可靠的CCTV直播源（腾讯云CDN master m3u8，ExoPlayer可自动解析）
-CCTV_SOURCES = {
-    'CCTV-1': ['https://cctvtxyh5ca.liveplay.myqcloud.com/live/cctv1_2/index.m3u8'],
-    'CCTV-5': ['https://cctvtxyh5ca.liveplay.myqcloud.com/live/cctv5_2/index.m3u8'],
-    'CCTV-5+': ['https://cctvtxyh5ca.liveplay.myqcloud.com/live/cctv5plus_2/index.m3u8'],
-}
-
-
-def playwright_cctv_sources():
-    """用Playwright从央视官网提取CCTV直播m3u8源"""
-    cctv_urls = {}
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        print("   Playwright未安装，跳过CCTV源提取")
-        return cctv_urls
-
-    print("   Playwright提取CCTV直播源...")
-    channels = {
-        'CCTV-1': 'https://tv.cctv.com/live/cctv1/',
-        'CCTV-5': 'https://tv.cctv.com/live/cctv5/',
-        'CCTV-5+': 'https://tv.cctv.com/live/cctv5plus/',
-    }
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            )
-            page = context.new_page()
-
-            for ch_name, ch_url in channels.items():
-                m3u8_urls = []
-
-                def handle_request(request):
-                    url = request.url
-                    if '.m3u8' in url:
-                        m3u8_urls.append(url)
-
-                def handle_response(response):
-                    url = response.url
-                    if '.m3u8' in url:
-                        m3u8_urls.append(url)
-
-                page.on('request', handle_request)
-                page.on('response', handle_response)
-                try:
-                    page.goto(ch_url, timeout=30000, wait_until='domcontentloaded')
-                    page.wait_for_timeout(8000)
-                    # 尝试点击播放按钮
-                    try:
-                        play_btn = page.query_selector('.play_btn, .video_play, .cctv_play, [class*="play"], button[title*="播放"]')
-                        if play_btn:
-                            play_btn.click()
-                            page.wait_for_timeout(5000)
-                    except Exception:
-                        pass
-                except Exception as e:
-                    print(f"   {ch_name}页面加载失败: {type(e).__name__}")
-
-                # 去重，优先选择带片段的m3u8（非master）
-                unique_urls = list(set(m3u8_urls))
-                # 排序：包含 EXTINF 的优先
-                direct_urls = []
-                master_urls = []
-                for url in unique_urls:
-                    if 'index.m3u8' in url or 'playlist.m3u8' in url or 'master' in url:
-                        master_urls.append(url)
-                    else:
-                        direct_urls.append(url)
-                
-                final_urls = direct_urls + master_urls
-                if final_urls:
-                    cctv_urls[ch_name] = final_urls[:3]  # 最多3个源
-                    print(f"   {ch_name}: 获取{len(final_urls)}个m3u8源")
-
-                page.remove_listener('request', handle_request)
-                page.remove_listener('response', handle_response)
-
-            browser.close()
-    except Exception as e:
-        print(f"   Playwright CCTV提取失败: {e}")
-
-    return cctv_urls
-
 
 def parse_homepage():
     """解析首页，提取比赛列表"""
@@ -448,26 +363,6 @@ def parse_iptv_sources():
     """解析IPTV直播源"""
     print("\n3. 解析IPTV直播源...")
     all_channels = {}
-
-    # CCTV频道 - 先尝试Playwright从央视官网提取
-    print("   解析CCTV频道...")
-    pw_cctv = playwright_cctv_sources()
-    cctv_channels = []
-    if pw_cctv:
-        for name, urls in pw_cctv.items():
-            for url in urls:
-                cctv_channels.append(f"{name},{url}")
-        print(f"   Playwright获取{len(cctv_channels)}个CCTV源")
-
-    # 补充硬编码的腾讯云CDN源
-    if len(cctv_channels) < 3:
-        for name, urls in CCTV_SOURCES.items():
-            for url in urls:
-                cctv_channels.append(f"{name},{url}")
-        print(f"   补充硬编码CCTV源")
-
-    if cctv_channels:
-        all_channels["央视频道"] = cctv_channels
 
     # 解析TVBox接口中的直播源（巧技等）
     print("   解析TVBox接口直播源...")
