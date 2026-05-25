@@ -2,8 +2,8 @@ name: 更新JRS直播源
 
 on:
   schedule:
-    # 每小时整点运行
-    - cron: '0 * * * *'
+    # 北京时间 0、2、8、11、17、19、20、22点（UTC+8，减8小时）
+    - cron: '0 16,18,0,3,9,11,12,14 * * *'
   workflow_dispatch: # 手动触发
 
 jobs:
@@ -18,7 +18,9 @@ jobs:
           python-version: '3.11'
 
       - name: Install deps
-        run: pip install requests beautifulsoup4
+        run: |
+          pip install requests beautifulsoup4 playwright
+          playwright install chromium
 
       - name: Run update
         env:
