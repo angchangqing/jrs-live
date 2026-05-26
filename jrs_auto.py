@@ -74,14 +74,17 @@ def extract_all_sources(play_url):
     except Exception:
         return []
 
-    soup = BeautifulSoup(html, "html.parser")
+    # 移除HTML注释，提取被注释掉的源
+    html_clean = re.sub(r'<!--(.*?)-->', r'\1', html, flags=re.DOTALL)
+    soup = BeautifulSoup(html_clean, "html.parser")
     sources = []
     for el in soup.find_all(attrs={"data-play": True}):
         src = el.get("data-play", "")
         name = el.get_text(strip=True)
-        if src:
+        if src and src.strip() and src != '=&id2=':
             sources.append((name, src))
 
+    # 用requests解析
     results = []
     failed_sources = []
     for source_name, src_path in sources:
@@ -99,6 +102,64 @@ def extract_all_sources(play_url):
         pw_results = playwright_extract(base, play_url, failed_sources)
         results.extend(pw_results)
 
+    # 对重点赛事：用Playwright直接访问页面捕获所有m3u8请求
+    # （包括JS动态加载的源，requests无法提取）
+    pw_all = playwright_capture_all(play_url)
+    # 合并去重（按m3u8路径去重）
+    seen_paths = set(urlparse(u).path for u, _, _ in results)
+    for url, res_label, source_name in pw_all:
+        path = urlparse(url).path
+        if path not in seen_paths:
+            seen_paths.add(path)
+            results.append((url, res_label, source_name))
+
+    return results
+
+
+def playwright_capture_all(play_url):
+    """用Playwright访问直播页面，捕获所有m3u8网络请求（包括JS动态加载的源）"""
+    results = []
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return results
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(user_agent=HEADERS['User-Agent'])
+            page = context.new_page()
+
+            m3u8_urls = []
+
+            def handle_request(request):
+                if '.m3u8' in request.url:
+                    m3u8_urls.append(request.url)
+
+            page.on('request', handle_request)
+            try:
+                page.goto(play_url, timeout=20000, wait_until='networkidle')
+                page.wait_for_timeout(5000)
+                # 点击每个播放按钮，触发m3u8请求
+                play_btns = page.query_selector_all('[data-play]')
+                for btn in play_btns:
+                    try:
+                        btn.click(timeout=2000)
+                        page.wait_for_timeout(2000)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            for url in set(m3u8_urls):
+                if 'msss.html' in url:
+                    continue
+                results.append((url, "", "Playwright捕获"))
+
+            page.remove_listener('request', handle_request)
+            browser.close()
+    except Exception:
+        pass
     return results
 
 
