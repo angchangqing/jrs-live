@@ -118,70 +118,102 @@ def playwright_full_capture(base, play_url, failed_sources):
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
+        print("   Playwright未安装，跳过")
         return results
 
     total = len(failed_sources)
     print(f"   Playwright捕获 {total} 个失败源 + JS动态源...")
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(user_agent=HEADERS['User-Agent'])
+            browser = p.chromium.launch(
+                headless=True,
+                args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+            )
+            context = browser.new_context(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            )
             page = context.new_page()
 
             all_m3u8 = []
 
-            # 监听所有frame的请求（包括iframe内的m3u8请求）
             def handle_request(request):
-                if '.m3u8' in request.url and 'msss.html' not in request.url:
-                    all_m3u8.append(request.url)
-                    print(f"     捕获m3u8: {request.url[:80]}")
+                url = request.url
+                if '.m3u8' in url and 'msss.html' not in url:
+                    all_m3u8.append(url)
+                    print(f"     [请求] m3u8: {url[:80]}")
 
-            # 监听主页面和所有iframe的请求
+            def handle_response(response):
+                url = response.url
+                if '.m3u8' in url and 'msss.html' not in url and url not in all_m3u8:
+                    all_m3u8.append(url)
+                    print(f"     [响应] m3u8: {url[:80]}")
+
+            # 监听请求和响应（双保险）
             page.on('request', handle_request)
-            context.on('request', handle_request)
+            page.on('response', handle_response)
+            try:
+                context.on('request', handle_request)
+            except Exception:
+                print("     context.on不支持，使用page.on")
 
             # 第一步：访问直播页面，点击所有播放按钮
             try:
-                page.goto(play_url, timeout=20000, wait_until='domcontentloaded')
-                page.wait_for_timeout(3000)
-                # 点击所有播放按钮触发m3u8请求
+                print(f"     访问直播页: {play_url[:60]}")
+                page.goto(play_url, timeout=30000, wait_until='domcontentloaded')
+                page.wait_for_timeout(5000)
                 btns = page.query_selector_all('[data-play]')
                 print(f"     找到 {len(btns)} 个播放按钮")
                 for i, btn in enumerate(btns):
                     try:
-                        btn.click(timeout=3000)
+                        btn.click(timeout=5000)
                         page.wait_for_timeout(3000)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"     按钮{i+1}点击: {type(e).__name__}")
             except Exception as e:
-                print(f"     直播页面加载: {type(e).__name__}")
+                print(f"     直播页面: {type(e).__name__}: {str(e)[:80]}")
 
             # 第二步：对requests失败的源，逐个导航到其URL
             for source_name, src_path in failed_sources:
                 full_url = urljoin(base, src_path) if src_path.startswith('/') else src_path
-                print(f"     Playwright访问: {full_url[:60]}")
+                print(f"     访问失败源: {full_url[:60]}")
                 try:
-                    page.goto(full_url, timeout=20000, wait_until='domcontentloaded')
+                    page.goto(full_url, timeout=30000, wait_until='domcontentloaded')
                     page.wait_for_timeout(5000)
-                    # 检查iframe并等待其加载
-                    frames = page.frames
-                    for frame in frames:
+                    # 从页面内容中提取m3u8（备用方案）
+                    try:
+                        content = page.content()
+                        m3u8_matches = re.findall(r'(https?://[^"\'<>\s\\]+\.m3u8[^"\'<>\s\\]*)', content)
+                        for m in m3u8_matches:
+                            if m not in all_m3u8 and 'msss.html' not in m:
+                                all_m3u8.append(m)
+                                print(f"     [页面] m3u8: {m[:80]}")
+                    except Exception:
+                        pass
+                    # 从iframe内容提取
+                    for frame in page.frames:
                         try:
-                            frame.wait_for_load_state('networkidle', timeout=5000)
+                            frame_content = frame.content()
+                            frame_m3u8 = re.findall(r'(https?://[^"\'<>\s\\]+\.m3u8[^"\'<>\s\\]*)', frame_content)
+                            for m in frame_m3u8:
+                                if m not in all_m3u8 and 'msss.html' not in m:
+                                    all_m3u8.append(m)
+                                    print(f"     [iframe] m3u8: {m[:80]}")
                         except Exception:
                             pass
                 except Exception as e:
-                    print(f"     访问失败: {type(e).__name__}")
+                    print(f"     访问失败: {type(e).__name__}: {str(e)[:60]}")
 
             page.remove_listener('request', handle_request)
+            page.remove_listener('response', handle_response)
             browser.close()
 
-            print(f"     Playwright共捕获 {len(set(all_m3u8))} 个m3u8")
-            for url in set(all_m3u8):
+            unique_m3u8 = list(set(all_m3u8))
+            print(f"     Playwright共捕获 {len(unique_m3u8)} 个m3u8")
+            for url in unique_m3u8:
                 results.append((url, "", "Playwright"))
 
     except Exception as e:
-        print(f"   Playwright捕获失败: {e}")
+        print(f"   Playwright捕获失败: {type(e).__name__}: {str(e)[:100]}")
     return results
 
 
