@@ -62,7 +62,7 @@ def parse_homepage():
         return []
 
 
-def extract_all_sources(play_url):
+def extract_all_sources(play_url, use_playwright=True):
     """从直播页面提取所有源并解析m3u8"""
     parsed = urlparse(play_url)
     base = f"{parsed.scheme}://{parsed.netloc}"
@@ -98,51 +98,50 @@ def extract_all_sources(play_url):
         except Exception:
             failed_sources.append((source_name, src_path))
 
-    if failed_sources:
-        pw_results = playwright_extract(base, play_url, failed_sources)
-        results.extend(pw_results)
-
-    # 对重点赛事：用Playwright直接访问页面捕获所有m3u8请求
-    # （包括JS动态加载的源，requests无法提取）
-    pw_all = playwright_capture_all(play_url)
-    # 合并去重（按m3u8路径去重）
-    seen_paths = set(urlparse(u).path for u, _, _ in results)
-    for url, res_label, source_name in pw_all:
-        path = urlparse(url).path
-        if path not in seen_paths:
-            seen_paths.add(path)
-            results.append((url, res_label, source_name))
+    # 用Playwright一次性捕获所有m3u8源（包括JS动态加载的）
+    if use_playwright and (failed_sources or len(sources) < 9):
+        pw_results = playwright_full_capture(base, play_url, failed_sources)
+        # 合并去重（按m3u8路径去重）
+        seen_paths = set(urlparse(u).path for u, _, _ in results)
+        for url, res_label, source_name in pw_results:
+            path = urlparse(url).path
+            if path not in seen_paths:
+                seen_paths.add(path)
+                results.append((url, res_label, source_name))
 
     return results
 
 
-def playwright_capture_all(play_url):
-    """用Playwright访问直播页面，捕获所有m3u8网络请求（包括JS动态加载的源）"""
+def playwright_full_capture(base, play_url, failed_sources):
+    """用Playwright一次性捕获所有m3u8源（失败源+JS动态源）"""
     results = []
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
         return results
 
+    total = len(failed_sources)
+    print(f"   Playwright捕获 {total} 个失败源 + JS动态源...")
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(user_agent=HEADERS['User-Agent'])
             page = context.new_page()
 
-            m3u8_urls = []
+            # 第一步：访问直播页面，点击所有播放按钮，捕获m3u8
+            all_m3u8 = []
 
             def handle_request(request):
-                if '.m3u8' in request.url:
-                    m3u8_urls.append(request.url)
+                if '.m3u8' in request.url and 'msss.html' not in request.url:
+                    all_m3u8.append(request.url)
 
             page.on('request', handle_request)
             try:
                 page.goto(play_url, timeout=20000, wait_until='networkidle')
-                page.wait_for_timeout(5000)
-                # 点击每个播放按钮，触发m3u8请求
-                play_btns = page.query_selector_all('[data-play]')
-                for btn in play_btns:
+                page.wait_for_timeout(3000)
+                # 点击所有播放按钮触发m3u8请求
+                btns = page.query_selector_all('[data-play]')
+                for btn in btns:
                     try:
                         btn.click(timeout=2000)
                         page.wait_for_timeout(2000)
@@ -151,58 +150,24 @@ def playwright_capture_all(play_url):
             except Exception:
                 pass
 
-            for url in set(m3u8_urls):
-                if 'msss.html' in url:
-                    continue
-                results.append((url, "", "Playwright捕获"))
-
-            page.remove_listener('request', handle_request)
-            browser.close()
-    except Exception:
-        pass
-    return results
-
-
-def playwright_extract(base, play_url, failed_sources):
-    """用Playwright解析requests失败的源"""
-    results = []
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        return results
-
-    print(f"   Playwright解析 {len(failed_sources)} 个加密源...")
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(user_agent=HEADERS['User-Agent'])
-            page = context.new_page()
-
+            # 第二步：对requests失败的源，逐个访问其URL
             for source_name, src_path in failed_sources:
                 full_url = urljoin(base, src_path) if src_path.startswith('/') else src_path
-                m3u8_urls = []
-
-                def handle_request(request):
-                    if '.m3u8' in request.url:
-                        m3u8_urls.append(request.url)
-
-                page.on('request', handle_request)
                 try:
                     page.goto(full_url, timeout=20000, wait_until='networkidle')
                     page.wait_for_timeout(3000)
                 except Exception:
                     pass
 
-                for url in set(m3u8_urls):
-                    if 'msss.html' in url:
-                        continue
-                    # JRS源保留原始协议，不强制转HTTPS
-                    results.append((url, "", source_name))
-                page.remove_listener('request', handle_request)
-
+            page.remove_listener('request', handle_request)
             browser.close()
-    except Exception:
-        pass
+
+            # 去重
+            for url in set(all_m3u8):
+                results.append((url, "", "Playwright"))
+
+    except Exception as e:
+        print(f"   Playwright捕获失败: {e}")
     return results
 
 
@@ -320,9 +285,11 @@ def deep_parse(matches):
 
         m3u8_urls = []
         seen_paths = set()
-        for link in match.get("links", []):
+        links = match.get("links", [])
+        for li, link in enumerate(links):
             try:
-                all_src = extract_all_sources(link)
+                # 只对第一个链接启用Playwright捕获（3个链接页面源相同）
+                all_src = extract_all_sources(link, use_playwright=(li == 0))
                 for url, res_label, source_name in all_src:
                     path_key = urlparse(url).path
                     if path_key not in seen_paths:
