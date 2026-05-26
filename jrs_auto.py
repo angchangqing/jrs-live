@@ -128,41 +128,55 @@ def playwright_full_capture(base, play_url, failed_sources):
             context = browser.new_context(user_agent=HEADERS['User-Agent'])
             page = context.new_page()
 
-            # 第一步：访问直播页面，点击所有播放按钮，捕获m3u8
             all_m3u8 = []
 
+            # 监听所有frame的请求（包括iframe内的m3u8请求）
             def handle_request(request):
                 if '.m3u8' in request.url and 'msss.html' not in request.url:
                     all_m3u8.append(request.url)
+                    print(f"     捕获m3u8: {request.url[:80]}")
 
+            # 监听主页面和所有iframe的请求
             page.on('request', handle_request)
+            context.on('request', handle_request)
+
+            # 第一步：访问直播页面，点击所有播放按钮
             try:
-                page.goto(play_url, timeout=20000, wait_until='networkidle')
+                page.goto(play_url, timeout=20000, wait_until='domcontentloaded')
                 page.wait_for_timeout(3000)
                 # 点击所有播放按钮触发m3u8请求
                 btns = page.query_selector_all('[data-play]')
-                for btn in btns:
+                print(f"     找到 {len(btns)} 个播放按钮")
+                for i, btn in enumerate(btns):
                     try:
-                        btn.click(timeout=2000)
-                        page.wait_for_timeout(2000)
+                        btn.click(timeout=3000)
+                        page.wait_for_timeout(3000)
                     except Exception:
                         pass
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"     直播页面加载: {type(e).__name__}")
 
-            # 第二步：对requests失败的源，逐个访问其URL
+            # 第二步：对requests失败的源，逐个导航到其URL
             for source_name, src_path in failed_sources:
                 full_url = urljoin(base, src_path) if src_path.startswith('/') else src_path
+                print(f"     Playwright访问: {full_url[:60]}")
                 try:
-                    page.goto(full_url, timeout=20000, wait_until='networkidle')
-                    page.wait_for_timeout(3000)
-                except Exception:
-                    pass
+                    page.goto(full_url, timeout=20000, wait_until='domcontentloaded')
+                    page.wait_for_timeout(5000)
+                    # 检查iframe并等待其加载
+                    frames = page.frames
+                    for frame in frames:
+                        try:
+                            frame.wait_for_load_state('networkidle', timeout=5000)
+                        except Exception:
+                            pass
+                except Exception as e:
+                    print(f"     访问失败: {type(e).__name__}")
 
             page.remove_listener('request', handle_request)
             browser.close()
 
-            # 去重
+            print(f"     Playwright共捕获 {len(set(all_m3u8))} 个m3u8")
             for url in set(all_m3u8):
                 results.append((url, "", "Playwright"))
 
