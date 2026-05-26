@@ -342,17 +342,37 @@ def deep_parse(matches):
         m3u8_urls = []
         seen_paths = set()
         links = match.get("links", [])
+
+        # 第一步：所有链接先用requests解析
+        all_link_results = []
         for li, link in enumerate(links):
             try:
-                # 只对第一个链接启用Playwright捕获（3个链接页面源相同）
-                all_src = extract_all_sources(link, use_playwright=(li == 0))
-                for url, res_label, source_name in all_src:
+                src = extract_all_sources(link, use_playwright=False)
+                all_link_results.append((li, link, src))
+            except Exception:
+                all_link_results.append((li, link, []))
+
+        # 第二步：找到源最多的链接，对其启用Playwright捕获额外源
+        best_li, best_link, best_src = max(all_link_results, key=lambda x: len(x[2]))
+        if best_src or True:  # 始终尝试Playwright
+            try:
+                pw_src = extract_all_sources(best_link, use_playwright=True)
+                # 合并Playwright结果
+                for url, res_label, source_name in pw_src:
                     path_key = urlparse(url).path
                     if path_key not in seen_paths:
                         seen_paths.add(path_key)
                         m3u8_urls.append((url, res_label, source_name))
             except Exception:
-                continue
+                pass
+
+        # 合并所有链接的requests结果
+        for li, link, src in all_link_results:
+            for url, res_label, source_name in src:
+                path_key = urlparse(url).path
+                if path_key not in seen_paths:
+                    seen_paths.add(path_key)
+                    m3u8_urls.append((url, res_label, source_name))
 
         if m3u8_urls:
             results.append({
