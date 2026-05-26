@@ -98,6 +98,8 @@ def extract_all_sources(play_url, use_playwright=True):
         except Exception:
             failed_sources.append((source_name, src_path))
 
+    print(f"   requests解析: {len(results)} 成功, {len(failed_sources)} 失败")
+
     # 用Playwright一次性捕获所有m3u8源（包括JS动态加载的）
     if use_playwright and (failed_sources or len(sources) < 9):
         pw_results = playwright_full_capture(base, play_url, failed_sources)
@@ -223,7 +225,8 @@ def parse_source(base, play_url, src_path):
     try:
         r = requests.get(full_url, headers=HEADERS, timeout=10, verify=False)
         content = r.content.decode('utf-8', errors='ignore')
-    except Exception:
+    except Exception as e:
+        print(f"     请求失败 {src_path[:30]}: {type(e).__name__}")
         return None
 
     # sm.html
@@ -240,9 +243,16 @@ def parse_source(base, play_url, src_path):
                 m = re.search(r'(/live/\d+\.m3u8[^"\'<>\s]*)', detail)
                 if m: m3u8_path = m.group(1)
             if m3u8_path:
-                return resolve_m3u8("https://hdl6.szsummer.cn" + m3u8_path)
-        except Exception:
-            pass
+                result = resolve_m3u8("https://hdl6.szsummer.cn" + m3u8_path)
+                if result:
+                    print(f"     sm.html解析成功: id={id_match.group(1)}")
+                    return result
+                else:
+                    print(f"     sm.html m3u8解析失败: id={id_match.group(1)} path={m3u8_path[:40]}")
+            else:
+                print(f"     sm.html未找到m3u8路径: id={id_match.group(1)} detail_len={len(detail)}")
+        except Exception as e:
+            print(f"     sm.html请求失败: id={id_match.group(1)} {type(e).__name__}")
 
     # JS iframe
     js_iframe = re.search(r"src=['\"](\.?/?play/\w+\.php\?[^'\"]+)['\"]", content)
