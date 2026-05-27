@@ -615,6 +615,47 @@ def upload_to_gitee(live_content):
     return config_url, live_txt_url
 
 
+def send_feishu_notification(results, config_url):
+    """发送飞书通知"""
+    webhook_url = os.environ.get("FEISHU_WEBHOOK", "")
+    if not webhook_url:
+        return
+
+    # 构建消息内容
+    lines = []
+    lines.append("🏀 JRS直播源已更新")
+    lines.append("")
+
+    if results:
+        for match in results:
+            league = match['league']
+            home = match['home']
+            away = match['away']
+            src_count = len(match.get('m3u8_urls', []))
+            lines.append(f"【{league}】{home} vs {away}（{src_count}个源）")
+    else:
+        lines.append("暂无重点赛事直播")
+
+    lines.append("")
+    lines.append(f"TVBox配置: {config_url}")
+
+    msg = {
+        "msg_type": "text",
+        "content": {
+            "text": "\n".join(lines)
+        }
+    }
+
+    try:
+        r = requests.post(webhook_url, json=msg, timeout=10, verify=False)
+        if r.status_code == 200 and r.json().get("code") == 0:
+            print("   飞书通知发送成功")
+        else:
+            print(f"   飞书通知发送失败: {r.text[:100]}")
+    except Exception as e:
+        print(f"   飞书通知发送失败: {type(e).__name__}")
+
+
 def main():
     print("=" * 50)
     print("JRS直播源自动解析上传")
@@ -634,6 +675,9 @@ def main():
         print(f"\nTVBox配置地址: {config_url}")
         print(f"直播源地址: {live_url}")
         print("=" * 50)
+
+        # 发送飞书通知
+        send_feishu_notification(results, config_url)
 
 
 if __name__ == "__main__":
