@@ -27,4 +27,5 @@ jobs:
       - name: Run update
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
         run: python jrs_auto.py
